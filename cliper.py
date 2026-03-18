@@ -241,7 +241,8 @@ def run_commands():
     write_log("=== 영상/클립 추출 작업 시작 ===")
 
     m3u8_range_args = []
-    ffmpeg_cut_args = []
+    cut_seek_sec = None   # 입력 탐색 시작 지점
+    cut_duration_sec = None  # 자를 구간 길이
 
     if is_cut:
         try:
@@ -258,8 +259,9 @@ def run_commands():
         rel_start_sec = start_sec - pad_start_sec
         rel_end_sec = end_sec - pad_start_sec
         
+        cut_seek_sec = rel_start_sec
+        cut_duration_sec = rel_end_sec - rel_start_sec
         m3u8_range_args = ["--custom-range", f"{sec_to_time(pad_start_sec)}-{sec_to_time(pad_end_sec)}"]
-        ffmpeg_cut_args = ["-ss", sec_to_time(rel_start_sec), "-to", sec_to_time(rel_end_sec)]
     else:
         write_log("알림: '구간 자르기'가 비활성화되어 풀영상을 다운로드합니다.")
 
@@ -273,7 +275,7 @@ def run_commands():
             write_log(f"클립 주소 추출 완료: {m3u8_url[:50]}...")
             write_log("▶ [1/4 영상 원본 주소 추출] 완료\n")
             
-            cmd2 = [N_M3U8_PATH, m3u8_url, "--save-dir", save_dir, "--save-name", "temp_clip", "--auto-select"] + m3u8_range_args
+            cmd2 = [N_M3U8_PATH, m3u8_url, "--save-dir", save_dir, "--save-name", "temp_clip", "--auto-select", "--thread-count", "16"] + m3u8_range_args
             run_cmd_with_log(cmd2, "2/4 영상 다운로드 중")
         elif "chzzk.naver.com" in url:
             # 치지직 VOD 및 기타 치지직 영상은 yt-dlp로 m3u8 주소만 추출 후 N_m3u8DL-RE 로 다운로드
@@ -282,7 +284,7 @@ def run_commands():
             out1 = run_cmd_with_log(cmd1, "1/4 영상 원본 주소 추출")
             m3u8_url = out1.strip().split('\n')[-1]
             
-            cmd2 = [N_M3U8_PATH, m3u8_url, "--save-dir", save_dir, "--save-name", "temp_clip", "--auto-select"] + m3u8_range_args
+            cmd2 = [N_M3U8_PATH, m3u8_url, "--save-dir", save_dir, "--save-name", "temp_clip", "--auto-select", "--thread-count", "16"] + m3u8_range_args
             run_cmd_with_log(cmd2, "2/4 영상 다운로드 중")
         else:
             write_log("▶ [1~2/4 영상 다운로드] 시작 (유튜브 등 풀영상 yt-dlp 직접 다운로드)")
@@ -298,8 +300,15 @@ def run_commands():
             raise Exception("임시 파일 다운로드에 실패했습니다.")
         temp_file = temp_files[0]
         
-        # 3단계
-        cmd3 = [FFMPEG_PATH, "-y", "-i", temp_file] + ffmpeg_cut_args + [final_file]
+        # 3단계: 입력 탐색(Input Seeking)으로 키프레임에서 정확하게 잘라냄
+        # -ss를 -i 앞에 두면 ffmpeg가 바로 해당 키프레임으로 이동 후 스트림 복사 → 재인코딩 없이 즉시 완료
+        if cut_seek_sec is not None:
+            cmd3 = [FFMPEG_PATH, "-y",
+                    "-ss", sec_to_time(cut_seek_sec), "-i", temp_file,
+                    "-t",  sec_to_time(cut_duration_sec),
+                    "-c", "copy", "-avoid_negative_ts", "make_zero", final_file]
+        else:
+            cmd3 = [FFMPEG_PATH, "-y", "-i", temp_file, "-c", "copy", "-avoid_negative_ts", "make_zero", final_file]
         run_cmd_with_log(cmd3, "3/4 영상 컷팅 및 포맷 변환")
         
         # 4단계
@@ -319,7 +328,7 @@ def run_commands():
         
     except Exception as e:
         if is_cancelled:
-            lbl_status.config(text="상태: 다운로드 취소 취소됨", fg="#F9E2AF") # 노란색/경고색
+            lbl_status.config(text="상태: 다운로드 중단됨", fg="#F9E2AF") # 노란색/경고색
         else:
             lbl_status.config(text="상태: 오류 발생 (로그 확인)", fg=ACCENT_ERR)
             write_log(f"\n!!! 작업 중 치명적 오류 발생 !!!\n{str(e)}")
